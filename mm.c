@@ -19,10 +19,13 @@ team_t team = {
     /* First member's email address */
     "jongwoo0221@gmail.com",
     /* Second member's full name (leave blank if none) */
-    "Humyung Lee",
+    "",
     /* Second member's email address (leave blank if none) */
-    "lhm"
+    ""
 };
+
+
+
 
 // CONSTANTS
 #define WSIZE 4     // 워드의 크기
@@ -58,13 +61,18 @@ static char *root = NULL;       // 명시적 가용 리스트의 첫 노드를 �
 
 /*
  * mm_init - 초기힙을 구성하는 함수
+            먼저 mem_sbrk()에 매개변수로 4 * WSIEZ를 전달하여 16 Byte만큼의 힙 공간을 늘린다.
+            첫 워드(4바이트)에는 미사용 패딩 워드인 0을,
+            두번째 워드에는 Prologue Header인 PACK(DSIZE, 1)을
+            네번째 워드에는 Eplogue Header인 PACK(0, 1)을 넣는다.
+            이 후 extend_heap()을 호출하여 CHUNKSIZE / WSIZE 만큼 힙의 크기를 늘린다. 
 
  *  _______________________________________                                                             ______________
  * |            |  PROLOGUE  |  PROLOGUE  |                                                            |   EPILOGUE  |
  * |   PADDING  |   HEADER   |   FOOTER   |                                                            |    HEADER   |
- * |------------|------------|------------|-----------|-----------|-----------|    ...    |------------|-------------|
- * |      0     |    8 / 1   |    8 / 1   |   HEADER  |  PREDESOR | SUCCESOR  |    ...    |   FOOTER   |    0 / 1    |
- * |------------|------------|------------|-----------|-----------|-----------|    ...    |------------|-------------|
+ * |------------|------------|------------|-----------|-----------|------------|    ...    |------------|-------------|
+ * |      0     |    8 / 1   |    8 / 1   |   HEADER  |  PREDESOR |  SUCCESOR  |    ...    |   FOOTER   |    0 / 1    |
+ * |------------|------------|------------|-----------|-----------|------------|    ...    |------------|-------------|
  * ^                                                                                                                 ^
  * heap_listp                                                                                                      mem_brk
  * root                                                                                                       mem_max_address
@@ -89,7 +97,12 @@ int mm_init(void){
 }
 
 /*
- * extend_heap : 힙을 매개변수로 주어진 워드보다 큰 짝수의 크기 바이트만큼 늘린다.
+ * extend_heap : 힙의 크기를 늘려주는 함수이다. 
+            매개변수 words 를 통해 늘려주고자 하는 힙의 크기를 받는다.
+            더블워드 정렬을 위해 짝수개의 DSIZE만큼의 크기를 늘린다.
+            새로 추가된 힙영역은 하나의 가용 블럭이므로 
+            header, footer, succesor, predesor등의 값을 초기화한다.
+            이 후 coalesce()를 호출하여 전 블럭과 병합이 가능한 경우 병합을 진행한다.
  */
 
 static void *extend_heap(size_t words){
@@ -111,39 +124,49 @@ static void *extend_heap(size_t words){
 }
 
 /*
- * mm_malloc
+ * mm_malloc : <stdlib.h>에 있는 malloc()를 explicit 방식으로 구현했다.
+            동적 메모리를 할당하는 함수이다. 
+            asize는 adjust size로 더블워드 정렬을 위해 크기를 조정한다. 
  */
 
 void *mm_malloc(size_t size){   
-    size_t asize; //adjusted size.
-    size_t esize; // if it doesn't fits, extend it to CHUNKSIZE.
+    size_t asize; // adjusted size.
+    size_t esize; // extend size. if it doesn't fits, extend it to CHUNKSIZE.
     char *bp;
     
-	if(size <= 0){
+	if(size <= 0){  // 할당 사이즈가 0보다 같거나 작으면 NULL을 반환한다.
 		return NULL;
 	} 
 
-    if(size <= DSIZE){
-        asize = 2 * DSIZE;
+    if(size <= DSIZE){  // 할당할 사이즈가 8보다 작으면 asize를 16 Byte으로 한다.
+        asize = 2 * DSIZE;  
     }
     else{
         asize = DSIZE * ((size + DSIZE + DSIZE-1) / DSIZE); // 더블 워드 정렬을 위해 size보다 크거나 같은 8의 배수로 크기를 재조정
     }
     if((bp = find_fit(asize)) != NULL){ // free-list에서 size보다 큰 리스트 탐색 
-        place(bp, asize);
+        place(bp, asize);               // 탐색에 성공하면 place()를 통해 할당
         return bp;
     }
 
-    esize = MAX(asize, CHUNKSIZE);
-    if((bp = extend_heap(esize / DSIZE)) == NULL){ // find_fit을 통해 찾은 free블럭에 배치
+    // 할당할 가용 블럭을 찾지 못하면 힙의 크기를 늘린다.
+    esize = MAX(asize, CHUNKSIZE);      // 할당할 크기와 미리 선언된 CHUNSIZE를 비교하여 더 큰 크기 만큼 힙의 크기를 늘린다.
+    if((bp = extend_heap(esize / DSIZE)) == NULL){ 
         return NULL;
     }
-    place(bp, asize);
+    place(bp, asize); // 확장된 힙의 블럭에 할당한다.
     return bp;
 }
 
 /*
- * mm_free : ptr에 지정된 블럭에 할당된 메모리 해제 및 free-list에 가용블럭 삽입
+ * mm_free : 할당되었던 블록을 가용 블럭으로 만든다.
+            ptr에 지정된 블럭에 할당된 메모리 해제 및 free-list에 가용블럭 삽입한다.
+            반환할 블록의 헤더를 통해 해당 블록의 크기를 확인하고
+            PACK(size, 0)을 통해 할당 여부에 가용으로 나타낸다.
+            free과정은 블록의 데이터를 지우지 않고, 가용 여부만 업데이트 한다.
+            그 이유는 이 후 에 기용여부만 확인 후, 다시 할당이 되었을 때 
+            새로 데이터의 값을 초기화하면 되기 때문이다. 따로 데이터는 지우지 않는다. 
+            
  */
 
 void mm_free(void *ptr){
@@ -161,6 +184,9 @@ void mm_free(void *ptr){
  * coalesce : 현재 bp가 가리키는 블록의 이전 블록과 다음 블록의 할당 여부를 
             확인하여 가용 블럭(free)이 있다면 현재 블록과 인접 가용 블럭을 
             하나의 가용 블럭으로 합친다.
+            이 때 LIFO 정책의 명시적 가용 리스트에서 새로 추가된 가용 블럭은 
+            항상 가용 리스트의 제일 처음으로 연결되므로 remove_freenode()를 
+            호출하여 명시적 가용 리스트에서 인접 가용 블럭의 연결을 끊어준다.
  */
 static void *coalesce(void *bp){
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp))); // 이전 블록의 할당 여부 확인 
@@ -194,10 +220,6 @@ static void *coalesce(void *bp){
     insert_node(bp); // CASE에 따라 만들어진 블럭을 가용 리스트(free-list)의 가장 앞에 삽입
     return bp;
 }
-
-/*
- * mm_free : 
- */
 
 void *mm_realloc(void *ptr, size_t size){
     if(size <= 0){ //equivalent to mm_free(ptr).
@@ -238,7 +260,10 @@ void insert_node(char *ptr){
 }
 
 /*
- * remove_free : 
+ * remove_freenode : malloc()에서 가용 블럭을 할당할 때 혹은 
+                coalesce()에서 가용 블록끼리의 병합을 진핼할 때 
+                명시적 가용 리스트에서 해당 블럭의 연결을 끊고 
+                이중 연결 리스트의 이전, 이후 연결을 문제 없게 이어주는 함수이다. 
  */
 
 void remove_freenode(char *ptr){ 
@@ -260,7 +285,7 @@ void remove_freenode(char *ptr){
 
 /*
  * find_fit : 할당할 블록을 최초 할당 방식으로 찾는 함수
-            가용 리스트의 처음부터 마지막부분에 도달할 때까지
+            명시적 가용 리스트의 처음부터 마지막부분에 도달할 때까지
             가용 리스트를 탐색하면서 사이즈가 asize보다 크거나 같은 블럭을
             찾으면 그 블럭의 주소를 반환한다. 
             만약 해당 블럭을 찾지 못했다면 NULL을 반환하고 힙을 혹장한다.
@@ -280,7 +305,7 @@ static void *find_fit(size_t asize){
 /*
  * place : 지정된 크기의 블럭을 find_fit을 통해 찾은 free 블럭에 배치(할당)한다.
         만약 free 블럭에서 동적할당을 받고자하는 블럭의 크기를 제하여도
-        또 다른 free블럭을 만들 수 있다면, free 블럭을 쪼갠다.
+        또 다른 free블럭을 만들 수 있다면(2 * DSIZE 보다 큰 경우), free 블럭을 쪼갠다.
  */
 static void place(void *bp, size_t asize){
     size_t csize = GET_SIZE(HDRP(bp));
